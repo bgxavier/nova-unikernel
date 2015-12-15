@@ -1,133 +1,96 @@
 from git import Repo
 import subprocess
 import os
-import shutil
 
 from oslo_log import log
 from oslo_config import cfg
-from oslo_utils import units
 
-from nova import utils
-from nova import image
-from nova.compute import utils as compute_utils
-from nova.virt.libvirt import imagecache
-from nova.virt.libvirt import driver
-from nova.virt.libvirt import blockinfo
-from nova.virt.libvirt import utils as libvirt_utils
+from nova.image import glance
+from nova.virt.libvirt import driver as libvirt_driver
 from nova.virt import images
 
-environ = os.environ.copy()
-repo_path = '/opt/stack/data/unikernel'
-path_tmp = '/tmp/glance/unikernel/unikernel.qemu'
-staged = '/tmp/glance/unikernel/unikernel.converted'
 
-libvirt_opts = []
+environ = os.environ.copy()
+
+unikernel_opts = [
+    cfg.StrOpt('branch',
+               default='master',
+               help='branch to be fetched'),
+    cfg.StrOpt('repo_path',
+               default='/opt/stack/data/unikernel',
+               help='branch to be fetched'),
+]
 
 CONF = cfg.CONF
-CONF.register_opts(libvirt_opts, 'libvirt')
+CONF.register_opts(unikernel_opts, 'unikernel')
+
+build_path = os.path.join(CONF.unikernel.repo_path, 'unikernel/unikernel.qemu')
 
 LOG = log.getLogger(__name__)
 
-class UnikernelDriver(driver.LibvirtDriver):
 
-  #  def _create_image(self):
-   #     self.fetch_from_source(image_meta)
-    #    self.compile(repo_path,image_meta)
+class UnikernelDriver(libvirt_driver.LibvirtDriver):
 
     def __init__(self, virtapi):
         super(UnikernelDriver, self).__init__(virtapi)
-        self.image_api = image.API()
-
-    def _create_image(self, context, instance,
-                      disk_mapping, suffix='',
-                      disk_images=None, network_info=None,
-                      block_device_info=None, files=None,
-                      admin_pass=None, inject_files=True,
-                      fallback_from_host=None):
-
-        def image(fname, image_type=CONF.libvirt.images_type):
-            return self.image_backend.image(instance,
-                                            fname + suffix, image_type)        
-
-        if not disk_images:
-            disk_images = {'image_id': instance.image_ref,
-                           'kernel_id': instance.kernel_id,
-                           'ramdisk_id': instance.ramdisk_id}
-
-        inst_type = instance.get_flavor() # flavor
-        root_fname = imagecache.get_cache_fname(disk_images, 'image_id') # filename in _base
-        size = instance.root_gb * units.Gi # size of the image
-        backend = image('disk')
-
-        image_ref = instance.get('image_ref') 
-        image_meta = compute_utils.get_image_metadata(
-            context, self.image_api, image_ref, instance)
-
-        # Fetch from git
-        self.fetch_from_source(image_meta)
-
-        # Compile the image
-        self.compile(repo_path,image_meta)
-        
-        # Retrieve the format and virtual size
-        data = images.qemu_img_info(path_tmp)
-
-        disk_size = data.virtual_size
-        fmt = data.file_format
-
-        # Convert from qcow2 to raw
-        images.convert_image(path_tmp, staged, 'raw')
-
-        # Remove the old qcow image
-        os.unlink(path_tmp)
-
-        # Rename the converted image
-        os.rename(staged, path)
-
-        LOG.debug("TESTANDO %s", )
 
     def _try_fetch_image_cache(self, image, fetch_func, context, filename,
                                image_id, instance, size,
                                fallback_from_host=None):
-        try:
-            image.cache(fetch_func=fetch_func,
-                        context=context,
-                        filename=filename,
-                        image_id=image_id,
-                        user_id=instance.user_id,
-                        project_id=instance.project_id,
-                        size=size)
-        except exception.ImageNotFound:
-            if not fallback_from_host:
-                raise
-            LOG.debug("Image %(image_id)s doesn't exist anymore "
-                      "on image service, attempting to copy "
-                      "image from %(host)s",
-                      {'image_id': image_id, 'host': fallback_from_host})
 
-            def copy_from_host(target, max_size):
-                libvirt_utils.copy_image(src=target,
-                                         dest=target,
-                                         host=fallback_from_host,
-                                         receive=True)
-            image.cache(fetch_func=copy_from_host,
-                        filename=filename)
+        # Get the image name ( it represents the remote repository )
+        image_service = glance.get_default_image_service()
+        image_top = image_service.show(context,
+                                       instance.image_ref)
+        repo_url = image_top.get('name')
 
-    def compile(self, path, image_meta):
-       p = subprocess.Popen(['capstan', 'build'], cwd=path,env=dict(environ, CAPSTAN_ROOT='/tmp/glance'))
-       p.wait()
+        # Fetch the image
+        self.image_fetch(instance,
+                         filename,
+                         repo_url,
+                         CONF.unikernel.repo_path,
+                         CONF.unikernel.branch)
 
-    def fetch_from_source(self,image_meta):
-        LOG.debug("Fetching repo %s...", image_meta['name'])
+        image.cache(fetch_func=fetch_func,
+                    context=context,
+                    filename=filename,
+                    image_id=image_id,
+                    user_id=instance.user_id,
+                    project_id=instance.project_id,
+                    size=size)
+
+    def image_fetch(self, instance, filename, repo_url, repo_path, branch):
+
         repo = Repo.init(repo_path)
+
+        LOG.debug("Fetching repo %s...", repo_url)
         try:
-            origin = repo.create_remote('origin',image_meta['name'])
+            origin = repo.create_remote('origin', repo_url)
         except:
             origin = repo.remotes['origin']
-        origin.fetch()
-        origin.pull(origin.refs[0].remote_head)
-        LOG.debug("Repositorio atualizado %s...", image_meta['name'])
-        
+        try:
+            origin.fetch(branch)
+        except:
+        origin.pull(origin.refs[branch].remote_head)
 
+        self.compile_image(repo_path)
 
+        # Convert from qcow2 to raw
+        instance_path = os.path.join(CONF.instances_path, '_base')
+        LOG.debug("Converting image %s", instance_path)
+        staged_path = os.path.join(instance_path, filename)
 
+        if os.path.exists(staged_path):
+            os.unlink(staged_path)
+
+        images.convert_image(build_path, staged_path, 'raw')
+
+    def check_branch_diffs(self, repo, branch):
+        return repo.git.diff("origin/%s" % branch)
+
+    def compile_image(self, repo_path):
+        LOG.debug("Recompiling image ...")
+        p = subprocess.Popen(['capstan', 'build'],
+                             cwd=repo_path,
+                             env=dict(environ, CAPSTAN_ROOT=repo_path))
+        p.wait()
