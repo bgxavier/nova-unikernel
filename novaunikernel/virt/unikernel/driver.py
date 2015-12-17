@@ -6,6 +6,7 @@ from oslo_log import log
 from oslo_config import cfg
 from git import exc
 
+from nova.openstack.common import fileutils
 from nova.image import glance
 from nova.virt.libvirt import driver as libvirt_driver
 from nova.virt import images
@@ -37,36 +38,35 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
                                image_id, instance, size,
                                fallback_from_host=None):
 
-        # Get the image name ( it represents the remote repository )
-        image_service = glance.get_default_image_service()
-        image_top = image_service.show(context,
-                                       instance.image_ref)
-        repo_url = image_top.get('name')
+
+        repository_url = self.get_repository_url(context, instance.image_ref)
 
         # Fetch the image
-        self.image_fetch(instance,
-                         filename,
-                         repo_url,
-                         image_id,
-                         CONF.unikernel.repo_base,
-                         CONF.unikernel.branch)
+        try:
+            LOG.info("Trying to fetch repository...")
+            if self.image_pulling(instance, filename, repository_url, image_id,
+                                  CONF.unikernel.repo_base,
+                                  CONF.unikernel.branch):
+                LOG.info("Repository updated, compiling image...")
+                self.compile_image(CONF.unikernel.repo_base, image_id)
+            else:
+                LOG.info("Repository already updated")
+        except:
+            LOG.info("Could not pull the image")
 
-        image.cache(fetch_func=fetch_func,
-                    context=context,
-                    filename=filename,
-                    image_id=image_id,
-                    user_id=instance.user_id,
-                    project_id=instance.project_id,
-                    size=size)
 
-    def image_fetch(self, instance, filename, repo_url, image_id, repo_base,
-                    branch):
+ #      image.cache(fetch_func=fetch_func,
+ #                  context=context,
+ #                  filename=filename,
+ #                  image_id=image_id,
+ #                  user_id=instance.user_id,
+ #                  project_id=instance.project_id,
+ #                  size=size)
 
-        # initialize the unikernel repository
-        unikernel_repo = os.path.join(repo_base, image_id)
+    def image_pulling(self, instance, filename, repo_url,image_id, repo_base, branch):
+
+        unikernel_repo = self.get_unikernel_repo(repo_base, image_id)
         repo = Repo.init(unikernel_repo)
-
-        LOG.debug("Fetching repo %s...", repo_url)
 
         try:
             origin = repo.create_remote('origin', repo_url)
@@ -78,28 +78,47 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
         except exc.GitCommandError:
             raise
 
-        origin.pull(origin.refs[branch].remote_head)
+        if self.check_branch_diffs(repo, branch):
+            origin.pull(origin.refs[branch].remote_head)
+            return True
+        else:
+            return False
 
-        self.compile_image(repo_base, unikernel_repo, image_id)
+    def convert_image_to_raw(compiled_image_path, target_path):
+        if os.path.exists(compiled_image_path):
+            os.unlink(target_path)
+            images.convert_image(compiled_image_path, target_path, 'raw')
 
-        # Convert from qcow2 to raw
-        instance_path = os.path.join(CONF.instances_path, '_base')
-        LOG.debug("Converting image %s", instance_path)
-        staged_path = os.path.join(instance_path, filename)
-
-        if os.path.exists(staged_path):
-            os.unlink(staged_path)
-
-        compiled_image = os.path.join(unikernel_repo,
-                                      image_id + '.qemu')
-        images.convert_image(compiled_image, staged_path, 'raw')
+    def get_repository_url(self, context, image_ref):
+        image_service = glance.get_default_image_service()
+        image_top = image_service.show(context, image_ref)
+        return image_top.get('name')
 
     def check_branch_diffs(self, repo, branch):
         return repo.git.diff("origin/%s" % branch)
 
-    def compile_image(self, repo_base, unikernel_repo,  image_id):
+    def check_image(self):
+        pass
+
+    def get_unikernel_repo(self, repo_base, image_id):
+        return os.path.join(repo_base, image_id)
+
+    def get_image_cache_dir(self, filename):
+        base_dir = os.path.join(CONF.instances_path,
+                                CONF.image_cache_subdirectory_name)
+        if not os.path.exists(base_dir):
+            fileutils.ensure_tree(base_dir)
+
+        return os.path.join(base_dir, filename)
+
+    def compile_image(self, repo_base,  image_id):
+        unikernel_repo = self.get_unikernel_repo(repo_base, image_id)
+        build_image_path = os.path.join(unikernel_repo,
+                                           image_id + '.qemu')
         LOG.debug("Recompiling image ...")
         p = subprocess.Popen(['capstan', 'build', image_id],
                              cwd=unikernel_repo,
                              env=dict(environ, CAPSTAN_ROOT=repo_base))
         p.wait()
+
+        return build_image_path
