@@ -38,19 +38,18 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
                                image_id, instance, size,
                                fallback_from_host=None):
 
-
         repository_url = self.get_repository_url(context, instance.image_ref)
 
         # Fetch the image
         try:
             LOG.info("Trying to fetch repository...")
-            if self.image_pulling(instance, filename, repository_url, image_id,
+            if not self.image_pulling(instance, filename, repository_url, image_id,
                                   CONF.unikernel.repo_base,
                                   CONF.unikernel.branch):
-                LOG.info("Repository updated, compiling image...")
-                self.compile_image(CONF.unikernel.repo_base, image_id)
-            else:
                 LOG.info("Repository already updated")
+            else:
+                LOG.info("Repository updated, compiling image...")
+                self.compile_image(CONF.unikernel.repo_base, image_id, filename)
         except:
             LOG.info("Could not pull the image")
 
@@ -103,7 +102,7 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
     def get_unikernel_repo(self, repo_base, image_id):
         return os.path.join(repo_base, image_id)
 
-    def get_image_cache_dir(self, filename):
+    def get_image_cache_dir(self, image_id):
         base_dir = os.path.join(CONF.instances_path,
                                 CONF.image_cache_subdirectory_name)
         if not os.path.exists(base_dir):
@@ -111,14 +110,18 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
 
         return os.path.join(base_dir, filename)
 
-    def compile_image(self, repo_base,  image_id):
+    def compile_image(self, repo_base, image_id, filename):
+        LOG.info("Compiling image... %s %s", repo_base, filename)
+        base_dir = os.path.join(CONF.instances_path,
+                                CONF.image_cache_subdirectory_name)
+
         unikernel_repo = self.get_unikernel_repo(repo_base, image_id)
         build_image_path = os.path.join(unikernel_repo,
                                            image_id + '.qemu')
         LOG.debug("Recompiling image ...")
-        p = subprocess.Popen(['capstan', 'build', image_id],
+        p = subprocess.Popen(['capstan', 'build', filename],
                              cwd=unikernel_repo,
-                             env=dict(environ, CAPSTAN_ROOT=repo_base))
+                             env=dict(environ, CAPSTAN_ROOT=base_dir))
         p.wait()
 
         return build_image_path
