@@ -105,10 +105,8 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
 
         if repo.git.diff("origin/%s" % branch):
             origin.pull(origin.refs[branch].remote_head)
-            LOG.info("PEGUEI MUDANCA")
             return True
         else:
-            LOG.info("NAO PEGUEI MUDANCA")
             return False
 
     def convert_image_to_raw(self, image_build_path, target_path):
