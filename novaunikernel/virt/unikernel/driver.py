@@ -5,6 +5,7 @@ import os
 from oslo_log import log
 from oslo_config import cfg
 from git import exc
+from cgroupspy import trees
 
 from nova.openstack.common import fileutils
 from nova.image import glance
@@ -19,6 +20,12 @@ unikernel_opts = [
     cfg.StrOpt('branch',
                default='master',
                help='branch'),
+    cfg.StrOpt('compile_core_limit',
+               default=1,
+               help='Number of cores used for compiling'),
+    cfg.StrOpt('compile_mem_limit',
+               default=1,
+               help='Memory used for compiling'),
     cfg.StrOpt('repo_base',
                default='/opt/stack/data/unikernel',
                help='unikernels repo path'),
@@ -35,6 +42,8 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
     def __init__(self, virtapi):
         super(UnikernelDriver, self).__init__(virtapi)
         self.lock_path = os.path.join(CONF.instances_path, 'locks')
+        self.setup_cgroups(CONF.unikernel.compile_core_limit,
+                           CONF.unikernel.compile_mem_limit)
 
     def _try_fetch_image_cache(self, image, fetch_func, context, filename,
                                image_id, instance, size,
@@ -152,3 +161,16 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
         p.wait()
 
         return image_build_path
+
+    def setup_cgroups(self, core_limit, mem_limit):
+        t = trees.Tree()
+        cset_mem = t.get_node_by_path('/memory/stack')
+        cset_cpuset = t.get_node_by_path('/memory/cpuset')
+        try:
+            cset_cpuset.create_cgroup("unikernel")
+        except:
+            LOG.info("cpuset cgroup unikernel already created")
+        try:
+            cset_mem.create_cgroup("unikernel")
+        except:
+            LOG.info("memory cgroup unikernel already created")
