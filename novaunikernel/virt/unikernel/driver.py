@@ -5,13 +5,15 @@ import os
 from oslo_log import log
 from oslo_config import cfg
 from git import exc
-from cgroupspy import trees
+from cgroups import Cgroup
 
 from nova.openstack.common import fileutils
 from nova.image import glance
 from nova.virt.libvirt import driver as libvirt_driver
 from nova.virt import images
 from nova import utils
+
+import getpass
 
 
 environ = os.environ.copy()
@@ -21,10 +23,10 @@ unikernel_opts = [
                default='master',
                help='branch'),
     cfg.StrOpt('compile_core_limit',
-               default=1,
+               default=10,
                help='Number of cores used for compiling'),
     cfg.StrOpt('compile_mem_limit',
-               default=1,
+               default=20,
                help='Memory used for compiling'),
     cfg.StrOpt('repo_base',
                default='/opt/stack/data/unikernel',
@@ -42,8 +44,8 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
     def __init__(self, virtapi):
         super(UnikernelDriver, self).__init__(virtapi)
         self.lock_path = os.path.join(CONF.instances_path, 'locks')
-        self.setup_cgroups(CONF.unikernel.compile_core_limit,
-                           CONF.unikernel.compile_mem_limit)
+        self.cg = self.setup_cgroups(CONF.unikernel.compile_core_limit,
+                                     CONF.unikernel.compile_mem_limit)
 
     def _try_fetch_image_cache(self, image, fetch_func, context, filename,
                                image_id, instance, size,
@@ -155,7 +157,12 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
         image_build_path = os.path.join(base_dir, image_name,
                                         image_name + '.qemu')
 
+        def _add_pid_to_cgroup():
+            pid = os.getpid()
+            self.cg.add(pid)
+
         p = subprocess.Popen(['capstan', 'build', image_name],
+                             preexec_fn=_add_pid_to_cgroup,
                              cwd=unikernel_repo,
                              env=dict(environ, CAPSTAN_ROOT=base_dir))
         p.wait()
@@ -163,14 +170,13 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
         return image_build_path
 
     def setup_cgroups(self, core_limit, mem_limit):
-        t = trees.Tree()
-        cset_mem = t.get_node_by_path('/memory/stack')
-        cset_cpuset = t.get_node_by_path('/memory/cpuset')
+        process_user = getpass.getuser()
         try:
-            cset_cpuset.create_cgroup("unikernel")
+            utils.execute('user_cgroups', process_user, run_as_root=True)
+            cg = Cgroup('capstan')
+            cg.set_cpu_limit(core_limit)
+            cg.set_memory_limit(mem_limit)
+            return cg
         except:
-            LOG.info("cpuset cgroup unikernel already created")
-        try:
-            cset_mem.create_cgroup("unikernel")
-        except:
-            LOG.info("memory cgroup unikernel already created")
+            LOG.info("Verify whether the cgroups library was properly installed")
+            raise
