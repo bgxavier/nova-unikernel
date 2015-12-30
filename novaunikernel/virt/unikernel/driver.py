@@ -15,7 +15,6 @@ from nova import utils
 
 import getpass
 
-
 environ = os.environ.copy()
 
 unikernel_opts = [
