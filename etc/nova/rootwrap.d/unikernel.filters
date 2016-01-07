@@ -1,2 +1,2 @@
 [Filters]
-user_cgroups: CommandFilter, user_cgroups, root
+user_cgroups: CommandFilter, /usr/local/bin/user_cgroups, root
