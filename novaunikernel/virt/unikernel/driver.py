@@ -1,5 +1,4 @@
 from git import Repo
-import subprocess
 import os
 
 from oslo_log import log
@@ -22,7 +21,7 @@ unikernel_opts = [
                default='master',
                help='branch'),
     cfg.StrOpt('compile_core_limit',
-               default=10,
+               default=50,
                help='Number of cores used for compiling'),
     cfg.StrOpt('compile_mem_limit',
                default=20,
@@ -72,7 +71,7 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
                         do_compile = True
                 else:
                     # Se existe mudancas, recompila sempre
-                    LOG.info("Repository updated, compiling image...")
+                    LOG.info("Repository fetched, compiling image...")
                     do_compile = True
             except:
                 LOG.info("Could not pull the image")
@@ -160,11 +159,10 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
             pid = os.getpid()
             self.cg.add(pid)
 
-        p = subprocess.Popen(['capstan', 'build', image_name],
-                             preexec_fn=_add_pid_to_cgroup,
-                             cwd=unikernel_repo,
-                             env=dict(environ, CAPSTAN_ROOT=base_dir))
-        p.wait()
+        utils.execute('capstan', 'build', image_name,
+                      preexec_fn=_add_pid_to_cgroup,
+                      env_variables=dict(environ, CAPSTAN_ROOT=base_dir),
+                      cwd=unikernel_repo)
 
         return image_build_path
 
