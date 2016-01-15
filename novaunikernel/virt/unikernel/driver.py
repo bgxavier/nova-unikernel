@@ -100,20 +100,15 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
 
         LOG.info("Trying to fetch repository...")
         unikernel_repo = self.get_unikernel_repo(repo_base, image_id)
-        repo = Repo.init(unikernel_repo)
 
-        try:
-            origin = repo.create_remote('origin', repository_url)
-        except:
-            origin = repo.remotes['origin']
+        if not os.path.exists(unikernel_repo):
+            utils.execute('git', 'clone', repository_url, unikernel_repo)
+        else:
+            utils.execute('git', 'fetch', cwd=unikernel_repo)
 
-        try:
-            origin.fetch(branch)
-        except exc.GitCommandError:
-            raise
-
-        if repo.git.diff("origin/%s" % branch):
-            origin.pull(origin.refs[branch].remote_head)
+        (out, error) = utils.execute('git', 'diff', 'origin/' + branch, cwd=unikernel_repo)
+        if out:
+            utils.execute('git', 'pull', cwd=unikernel_repo)
             return True
         else:
             return False
@@ -133,6 +128,10 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
 
     def check_image_exists(self, image_cache_dir):
         return os.path.exists(image_cache_dir)
+
+    def check_repo_exists(self, path):
+        pass
+
 
     def get_unikernel_repo(self, repo_base, image_id):
         return os.path.join(repo_base, image_id)
