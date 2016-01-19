@@ -16,6 +16,8 @@ import getpass
 
 environ = os.environ.copy()
 
+CONF = cfg.CONF
+
 unikernel_opts = [
     cfg.StrOpt('branch',
                default='master',
@@ -31,7 +33,6 @@ unikernel_opts = [
                help='unikernels repo path'),
 ]
 
-CONF = cfg.CONF
 CONF.register_opts(unikernel_opts, 'unikernel')
 
 LOG = log.getLogger(__name__)
