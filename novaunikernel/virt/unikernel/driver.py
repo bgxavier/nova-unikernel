@@ -119,7 +119,7 @@ class UnikernelDriver(libvirt_driver.LibvirtDriver):
         if os.path.exists(target_path):
             os.unlink(target_path)
 
-        images.convert_image(image_build_path, target_path, 'raw')
+        images.convert_image(image_build_path, target_path, 'qcow2', 'raw')
         os.unlink(image_build_path)
 
     def get_repository_url(self, context, image_ref):
